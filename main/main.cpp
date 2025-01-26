@@ -3,7 +3,6 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_now.h"
 #include "esp_littlefs.h"
 #include "esp_sleep.h"
 #include "Support.h"
@@ -140,11 +139,17 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Temperature: %d°C", myData.ambient_temperature_x10);
 */
     //Moved this here to save some energy
-    wifi_auth_init();
+    wifi_init();
 
+    local_operation = SETTING_UP;
+    
     while(1) {
         switch(local_operation){
             case SETTING_UP:
+                wifi_init_ap();
+                start_http_server();
+                vTaskDelay(pdMS_TO_TICKS(100000));
+                vTaskDelay(pdMS_TO_TICKS(100000));
                 local_operation = SERVER;
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;

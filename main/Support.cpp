@@ -2,6 +2,7 @@
 #include "esp_wifi.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#include "esp_http_server.h"
 #include <vector>
 #include "nvs_flash.h"
 #include "driver/temperature_sensor.h"
@@ -12,14 +13,23 @@
 #define WIFI_SSID "Tilgin-rTRWEhj2aeRd"
 #define WIFI_PASS "3Wx6gcErzHzzj"
 
+#define ESP_WIFI_SSID "ESP-WIFI"
+#define ESP_WIFI_PASS "123456789"
+#define ESP_MAXIMUM_RETRY 5
+
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
+
 static const char* TAG_FILE = "FILESYSTEM";
 static const char* ADCTAG = "ADC";
 static const char* IIC_TAG = "I2C";
 static const char* TAG_WIFI = "WIFI";
+static const char* TAG_HTTP = "HTTP_SERVER";
 
 static EventGroupHandle_t wifi_event_group;
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
+
+static int s_retry_num = 0;
+
 
 uint8_t scale_adc_millivolts_to_humidity_percentage(int adc_millivolts, uint16_t millivolts_water, uint16_t millivolts_air){
     if(adc_millivolts < millivolts_water){
@@ -62,15 +72,29 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
+        //esp_wifi_connect();
+        if (s_retry_num < ESP_MAXIMUM_RETRY)
+        {
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGI(TAG_WIFI, "retry to connect to the AP");
+        }
+        else
+        {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+        ESP_LOGI(TAG_WIFI, "connect to the AP fail");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG_WIFI, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_num = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
 
 void wifi_auth_init(void)
 {
+    s_wifi_event_group = xEventGroupCreate(); // Initialize the event group
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -87,9 +111,96 @@ void wifi_auth_init(void)
             .password = WIFI_PASS,
         },
     };
+    
+    wifi_mode_t current_mode;
+    ESP_ERROR_CHECK(esp_wifi_get_mode(&current_mode));
+    if (current_mode != WIFI_MODE_NULL) {
+        ESP_ERROR_CHECK(esp_wifi_stop());
+    }
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+}
+
+void wifi_init_ap() {
+    s_wifi_event_group = xEventGroupCreate(); // Initialize the event group
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    wifi_mode_t current_mode;
+    ESP_ERROR_CHECK(esp_wifi_get_mode(&current_mode));
+    if (current_mode != WIFI_MODE_NULL) {
+        ESP_ERROR_CHECK(esp_wifi_stop());
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    wifi_config_t ap_config = {
+        .ap = {
+            .ssid = ESP_WIFI_SSID,
+            .password = ESP_WIFI_PASS,
+            .ssid_len = strlen(ESP_WIFI_SSID),
+            .channel = 1, // Set WiFi channel to 1
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK,
+            .max_connection = 4, // Adjust the max connection number
+            .beacon_interval = 100 // Increase beacon interval to 100ms
+        },
+    };
+    if (strlen(ESP_WIFI_SSID) == 0) {
+        ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Disable power save mode
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
+    // Configure the DHCP server
+    esp_netif_ip_info_t ip_info;
+    esp_netif_t *netif = esp_netif_create_default_wifi_ap();
+    ESP_ERROR_CHECK(esp_netif_dhcps_stop(netif));
+
+    // Set IP address, netmask, and gateway
+    IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
+    IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
+    IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip_info));
+
+    // Start the DHCP server
+    ESP_ERROR_CHECK(esp_netif_dhcps_start(netif));
+
+    // Log the IP configuration
+    ESP_LOGI(TAG_WIFI, "AP IP Address: " IPSTR, IP2STR(&ip_info.ip));
+    ESP_LOGI(TAG_WIFI, "AP Gateway: " IPSTR, IP2STR(&ip_info.gw));
+    ESP_LOGI(TAG_WIFI, "AP Netmask: " IPSTR, IP2STR(&ip_info.netmask));
+
+    // Disable SA Query procedure (last resort)
+    wifi_sta_config_t sta_config = {};
+    ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_AP, (wifi_config_t*)&sta_config));
+    sta_config.threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+    sta_config.threshold.rssi = -127;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, (wifi_config_t*)&sta_config));
+}
+
+
+static esp_err_t http_get_handler(httpd_req_t *req) {
+    const char* resp_str = "<!DOCTYPE html><html><body><h1>Hello, ESP32!</h1></body></html>";
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static httpd_uri_t uri_get = {
+    .uri      = "/",
+    .method   = HTTP_GET,
+    .handler  = http_get_handler,
+    .user_ctx = NULL
+};
+
+void start_http_server() {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_register_uri_handler(server, &uri_get);
+    }
 }
 
 // LittleFS functions

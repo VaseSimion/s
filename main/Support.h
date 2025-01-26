@@ -10,6 +10,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "stdint.h"
 #include "esp_http_client.h"
+#include "esp_wifi.h" // Include this header file
 #include <vector>
 
 #define DONE_PIN          GPIO_NUM_3
@@ -64,6 +65,9 @@ uint8_t scale_adc_millivolts_to_humidity_percentage(int adc_millivolts, uint16_t
 void init_nvs();
 void wifi_init();
 void wifi_auth_init();
+void wifi_init_ap();
+void start_http_server();
+
 void init_littlefs();
 
 bool write_uint8_array_to_file(const char* filename, const uint8_t* data, size_t length);
