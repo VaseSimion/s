@@ -9,6 +9,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "stdint.h"
+#include "esp_system.h"
 #include "esp_http_client.h"
 #include "esp_wifi.h" // Include this header file
 #include <vector>
@@ -34,13 +35,10 @@
 #define THINGSPEAK_API_KEY "SH5HQKJ0K659OG43"
 #define THINGSPEAK_URL "http://api.thingspeak.com/update"
 
-#define WIFI_SSID "your_ssid"
-#define WIFI_PASS "your_password"
-
 #define WIFI_CONNECTED_BIT BIT0
 
 //Enums
-enum running_state {SETTING_UP, SERVER, READING, RESET};
+enum running_state {SETTING_UP, READING, RESET, INITIALIZE};
 
 static EventGroupHandle_t s_wifi_event_group;
 
@@ -91,5 +89,9 @@ float get_temperature_from_HTU21D(i2c_master_dev_handle_t i2c_dev);
 void soft_reset_HTU21D(i2c_master_dev_handle_t i2c_dev);
 
 void send_to_thingspeak(sensors_data *data);
+
+running_state get_current_operation_mode();
+void set_current_op_mode(running_state mode);
+bool get_connection_status();
 
 #endif // GENERIC_FUNCTIONS_H

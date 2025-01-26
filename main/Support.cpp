@@ -10,9 +10,6 @@
 #define R1_VOL_DIV 2080 //2000 * 1.04 which is compensation for voltage drops
 #define R2_VOL_DIV 3000
 
-#define WIFI_SSID "Tilgin-rTRWEhj2aeRd"
-#define WIFI_PASS "3Wx6gcErzHzzj"
-
 #define ESP_WIFI_SSID "ESP-WIFI"
 #define ESP_WIFI_PASS "123456789"
 #define ESP_MAXIMUM_RETRY 5
@@ -29,7 +26,23 @@ static const char* TAG_HTTP = "HTTP_SERVER";
 static EventGroupHandle_t wifi_event_group;
 
 static int s_retry_num = 0;
+uint8_t local_ssid[32] = {0};
+uint8_t local_password[64] = {0};
+uint8_t local_api_key[17] = {0};
+running_state current_operation = SETTING_UP;
+bool connected_to_internet = false;
 
+void set_current_op_mode(running_state mode){
+    current_operation = mode;
+}
+
+running_state get_current_operation_mode(){
+    return current_operation;
+}
+
+bool get_connection_status(){
+    return connected_to_internet;
+}
 
 uint8_t scale_adc_millivolts_to_humidity_percentage(int adc_millivolts, uint16_t millivolts_water, uint16_t millivolts_air){
     if(adc_millivolts < millivolts_water){
@@ -89,38 +102,47 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG_WIFI, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        // Add a delay to ensure the connection is fully established
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
 void wifi_auth_init(void)
 {
     s_wifi_event_group = xEventGroupCreate(); // Initialize the event group
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = WIFI_SSID,
-            .password = WIFI_PASS,
-        },
-    };
-    
     wifi_mode_t current_mode;
     ESP_ERROR_CHECK(esp_wifi_get_mode(&current_mode));
     if (current_mode != WIFI_MODE_NULL) {
         ESP_ERROR_CHECK(esp_wifi_stop());
     }
+    else{
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+    }
+
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+
+    wifi_config_t wifi_config;
+
+    strncpy((char*)wifi_config.sta.ssid, (char*)local_ssid, sizeof(wifi_config.sta.ssid) - 1);
+    wifi_config.sta.ssid[sizeof(wifi_config.sta.ssid) - 1] = '\0'; // Ensure null-termination
+
+    strncpy((char*)wifi_config.sta.password, (char*)local_password, sizeof(wifi_config.sta.password) - 1);
+    wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0'; // Ensure null-termination
+
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false; // Disable PMF requirement
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    connected_to_internet = true;
 }
 
 void wifi_init_ap() {
@@ -183,7 +205,53 @@ void wifi_init_ap() {
 
 
 static esp_err_t http_get_handler(httpd_req_t *req) {
-    const char* resp_str = "<!DOCTYPE html><html><body><h1>Hello, ESP32!</h1></body></html>";
+    const char* resp_str = "<!DOCTYPE html><html><body>"
+                           "<h1>ESP32 Configuration</h1>"
+                           "<form action=\"/submit\" method=\"post\">"
+                           "SSID: <input type=\"text\" name=\"ssid\"><br>"
+                           "Password: <input type=\"text\" name=\"password\"><br>"
+                           "API Key ThingSpeak: <input type=\"text\" name=\"ApiKey\"><br>"
+                           "<input type=\"submit\" value=\"Submit\">"
+                           "</form>"
+                           "</body></html>";
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t http_post_handler(httpd_req_t *req) {
+    char buf[120];
+    int ret, remaining = req->content_len;
+
+    while (remaining > 0) {
+        if ((ret = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)))) <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            return ESP_FAIL;
+        }
+        remaining -= ret;
+    }
+
+    buf[req->content_len] = '\0';
+    ESP_LOGI(TAG_HTTP, "Received data: %s", buf);
+
+    // Parse the received data
+    sscanf(buf, "ssid=%31[^&]&password=%63[^&]&ApiKey=%16s", local_ssid, local_password, local_api_key);
+
+    ESP_LOGI(TAG_HTTP, "Parsed SSID: %s", local_ssid);
+    ESP_LOGI(TAG_HTTP, "Parsed Password: %s", local_password);
+    ESP_LOGI(TAG_HTTP, "Parsed API Key: %s", local_api_key);
+
+    // Save the received SSID, password, and API key to NVS or file system as needed
+
+    const char* resp_str = "Configuration saved";
+    httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
+    current_operation = READING;
+    return ESP_OK;
+}
+
+static esp_err_t http_connectivity_handler(httpd_req_t *req) {
+    const char* resp_str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
     httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -195,11 +263,35 @@ static httpd_uri_t uri_get = {
     .user_ctx = NULL
 };
 
+static httpd_uri_t uri_post = {
+    .uri      = "/submit",
+    .method   = HTTP_POST,
+    .handler  = http_post_handler,
+    .user_ctx = NULL
+};
+
+static httpd_uri_t uri_connectivity_check = {
+    .uri      = "/generate_204",
+    .method   = HTTP_GET,
+    .handler  = http_connectivity_handler,
+    .user_ctx = NULL
+};
+
+static httpd_uri_t uri_connectivity_check2 = {
+    .uri      = "/hotspot-detect.html",
+    .method   = HTTP_GET,
+    .handler  = http_connectivity_handler,
+    .user_ctx = NULL
+};
+
 void start_http_server() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_register_uri_handler(server, &uri_get);
+        httpd_register_uri_handler(server, &uri_post);
+        httpd_register_uri_handler(server, &uri_connectivity_check);
+        httpd_register_uri_handler(server, &uri_connectivity_check2);
     }
 }
 
@@ -495,11 +587,14 @@ void send_to_thingspeak(sensors_data *data) {
     char url[128];
     snprintf(url, sizeof(url),
         "http://api.thingspeak.com/update?"
-        "api_key=SH5HQKJ0K659OG43"
+        "api_key=%s"
         "&field1=%d"
         "&field2=%.1f",
+        local_api_key,
         data->soil_humidity_percentage,
         data->internal_temperature_x10 / 10.0f);
+
+    ESP_LOGI(TAG_HTTP, "Sending data to ThingSpeak: %s", url);
 
     esp_http_client_config_t config = {
         .url = url,
@@ -507,6 +602,11 @@ void send_to_thingspeak(sensors_data *data) {
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_perform(client);
+    esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG_HTTP, "HTTP GET request sent successfully");
+    } else {
+        ESP_LOGE(TAG_HTTP, "HTTP GET request failed: %s", esp_err_to_name(err));
+    }
     esp_http_client_cleanup(client);
 }

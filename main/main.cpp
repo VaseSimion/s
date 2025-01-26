@@ -19,7 +19,8 @@ static const char* TAG_I2C = "I2C";
 static int adc_raw[2][10], humidity_millivolts;
 static int voltage[2][10];
 
-
+running_state old_local_operation = INITIALIZE;
+running_state local_operation = SETTING_UP;
 int32_t adc_raw_sum = 0;
 
 adc_oneshot_unit_handle_t adc_handle;
@@ -36,12 +37,12 @@ uint16_t millivolts_air = 1000;  //3250  3150
 i2c_master_bus_handle_t i2c_bus = NULL;
 i2c_master_dev_handle_t i2c_dev = NULL;
 
-running_state local_operation = SETTING_UP;
 sensors_data myData;
 
 //Temperature sensor variables
 temperature_sensor_handle_t temp_handle = NULL;
 float temperature = 255.0;
+
 
 extern "C" void app_main(void)
 {
@@ -141,24 +142,25 @@ extern "C" void app_main(void)
     //Moved this here to save some energy
     wifi_init();
 
-    local_operation = SETTING_UP;
-    
     while(1) {
+        local_operation = get_current_operation_mode();
         switch(local_operation){
             case SETTING_UP:
-                wifi_init_ap();
-                start_http_server();
-                vTaskDelay(pdMS_TO_TICKS(100000));
-                vTaskDelay(pdMS_TO_TICKS(100000));
-                local_operation = SERVER;
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                break;
-            case SERVER:
-                local_operation = READING;
+                if(old_local_operation != local_operation){
+                    old_local_operation = local_operation;
+                    ESP_LOGI(TAG, "Changed operation mode to setting up");
+                    wifi_init_ap();
+                    start_http_server();
+                }
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
             
             case READING:
+                if(old_local_operation != local_operation){
+                    old_local_operation = local_operation;
+                    ESP_LOGI(TAG, "Changed operation mode to Reading");
+                    wifi_auth_init();
+                }
                 adc_raw_sum = 0;
                 for(int i=0;i<ADC_SAMPLE_COUNT;i++){
                     ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, HUMIDIDY_ADC_CH, &adc_raw[0][0]));
@@ -188,10 +190,17 @@ extern "C" void app_main(void)
                     ESP_LOGI(TAG_I2C, "Battery voltage is %d millivolts", myData.battery_level);
                 }
                 
-                send_to_thingspeak(&myData);
+                if(get_connection_status())
+                {
+                    send_to_thingspeak(&myData);
+                }
                 vTaskDelay(pdMS_TO_TICKS(20000));
                 break;
             case RESET:
+                if(old_local_operation != local_operation){
+                    old_local_operation = local_operation;
+                    ESP_LOGI(TAG, "Changed operation mode to: %d", local_operation);
+                }
                 static int reset_counter = 0;
                 config_gpio(LED_PIN, GPIO_MODE_OUTPUT);
                 gpio_set_level(LED_PIN, 1); //LED is inverted mode  
@@ -217,14 +226,15 @@ extern "C" void app_main(void)
                 }
                 else{
                     reset_counter = 0;
-                    local_operation = SERVER;
+                    local_operation = SETTING_UP;
                     config_gpio(LED_PIN, GPIO_MODE_INPUT);
                 }
                 break;
             default:
                 // Should never reach here
             break;
-
+        
         }
+    vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
