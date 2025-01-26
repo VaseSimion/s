@@ -1,0 +1,3 @@
+send more data to thingspeak
+add the idc sensor also
+fix wifi affter changing modes

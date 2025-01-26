@@ -12,18 +12,18 @@
 
 #define ESP_WIFI_SSID "ESP-WIFI"
 #define ESP_WIFI_PASS "123456789"
-#define ESP_MAXIMUM_RETRY 5
+#define ESP_MAXIMUM_RETRY 10
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
 static const char* TAG_FILE = "FILESYSTEM";
-static const char* ADCTAG = "ADC";
 static const char* IIC_TAG = "I2C";
 static const char* TAG_WIFI = "WIFI";
 static const char* TAG_HTTP = "HTTP_SERVER";
+static const char* TAG_ADC = "ADC";
 
-static EventGroupHandle_t wifi_event_group;
+static EventGroupHandle_t s_wifi_event_group;
 
 static int s_retry_num = 0;
 uint8_t local_ssid[32] = {0};
@@ -31,6 +31,17 @@ uint8_t local_password[64] = {0};
 uint8_t local_api_key[17] = {0};
 running_state current_operation = SETTING_UP;
 bool connected_to_internet = false;
+
+void update_wifi_credentials(const char* ssid, const char* password, const char* api_key) {
+    strncpy((char*)local_ssid, ssid, sizeof(local_ssid) - 1);
+    local_ssid[sizeof(local_ssid) - 1] = '\0'; // Ensure null-termination
+
+    strncpy((char*)local_password, password, sizeof(local_password) - 1);
+    local_password[sizeof(local_password) - 1] = '\0'; // Ensure null-termination
+
+    strncpy((char*)local_api_key, api_key, sizeof(local_api_key) - 1);
+    local_api_key[sizeof(local_api_key) - 1] = '\0'; // Ensure null-termination
+}
 
 void set_current_op_mode(running_state mode){
     current_operation = mode;
@@ -77,6 +88,8 @@ void wifi_init() {
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    // Add a delay to ensure the wifi starts
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -134,13 +147,16 @@ void wifi_auth_init(void)
     strncpy((char*)wifi_config.sta.password, (char*)local_password, sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.password[sizeof(wifi_config.sta.password) - 1] = '\0'; // Ensure null-termination
 
+    ESP_LOGI(TAG_WIFI, "Connecting to %s", wifi_config.sta.ssid);
+    ESP_LOGI(TAG_WIFI, "Password: %s", wifi_config.sta.password);
+    ESP_LOGI(TAG_WIFI, "API Key: %s", local_api_key);
+
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false; // Disable PMF requirement
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    
     vTaskDelay(pdMS_TO_TICKS(3000));
     connected_to_internet = true;
 }
@@ -242,11 +258,16 @@ static esp_err_t http_post_handler(httpd_req_t *req) {
     ESP_LOGI(TAG_HTTP, "Parsed Password: %s", local_password);
     ESP_LOGI(TAG_HTTP, "Parsed API Key: %s", local_api_key);
 
+    write_uint8_array_to_file("/storage/ssid.bin", (uint8_t*)&local_ssid, SSID_SIZE);
+    write_uint8_array_to_file("/storage/password.bin", (uint8_t*)&local_password, PASSWORD_SIZE);
+    write_uint8_array_to_file("/storage/apiKey.bin", (uint8_t*)&local_api_key, API_KEY_SIZE);
     // Save the received SSID, password, and API key to NVS or file system as needed
 
     const char* resp_str = "Configuration saved";
     httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
     current_operation = READING;
+    write_uint8_array_to_file("/storage/opMode.bin", (uint8_t*)&current_operation, 1);
+    vTaskDelay(pdMS_TO_TICKS(1000));
     return ESP_OK;
 }
 
@@ -494,7 +515,7 @@ bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t at
     esp_err_t ret = ESP_FAIL;
     bool calibrated = false;
     if (!calibrated) {
-        ESP_LOGI(ADCTAG, "calibration scheme version is %s", "Curve Fitting");
+        ESP_LOGI(TAG_ADC, "calibration scheme version is %s", "Curve Fitting");
         adc_cali_curve_fitting_config_t cali_config = {
             .unit_id = unit,
             .chan = channel,
@@ -508,18 +529,18 @@ bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t at
     }
     *out_handle = handle;
     if (ret == ESP_OK) {
-        ESP_LOGI(ADCTAG, "Calibration Success");
+        ESP_LOGI(TAG_ADC, "Calibration Success");
     } else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated) {
-        ESP_LOGW(ADCTAG, "eFuse not burnt, skip software calibration");
+        ESP_LOGW(TAG_ADC, "eFuse not burnt, skip software calibration");
     } else {
-        ESP_LOGE(ADCTAG, "Invalid arg or no memory");
+        ESP_LOGE(TAG_ADC, "Invalid arg or no memory");
     }
     return calibrated;
 }
 
 void adc_calibration_deinit(adc_cali_handle_t handle)
 {
-    ESP_LOGI(ADCTAG, "deregister %s calibration scheme", "Curve Fitting");
+    ESP_LOGI(TAG_ADC, "deregister %s calibration scheme", "Curve Fitting");
     ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
 }
 
@@ -605,6 +626,7 @@ void send_to_thingspeak(sensors_data *data) {
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
         ESP_LOGI(TAG_HTTP, "HTTP GET request sent successfully");
+        gpio_set_level(DONE_PIN, 1);
     } else {
         ESP_LOGE(TAG_HTTP, "HTTP GET request failed: %s", esp_err_to_name(err));
     }

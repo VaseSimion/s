@@ -24,6 +24,9 @@
 #define BATTERY_ADC_CH    ADC_CHANNEL_1 // The battery voltage divider must be connected to IO1
 
 #define MAC_SIZE 6
+#define SSID_SIZE 32
+#define PASSWORD_SIZE 64
+#define API_KEY_SIZE 17
 
 #define I2C_MASTER_SCL_IO           GPIO_NUM_4      // GPIO number for I2C master clock
 #define I2C_MASTER_SDA_IO           GPIO_NUM_5      // GPIO number for I2C master data
@@ -39,8 +42,6 @@
 
 //Enums
 enum running_state {SETTING_UP, READING, RESET, INITIALIZE};
-
-static EventGroupHandle_t s_wifi_event_group;
 
 typedef struct sensors_data {
     running_state operation;
@@ -93,5 +94,6 @@ void send_to_thingspeak(sensors_data *data);
 running_state get_current_operation_mode();
 void set_current_op_mode(running_state mode);
 bool get_connection_status();
+void update_wifi_credentials(const char* ssid, const char* password, const char* api_key);
 
 #endif // GENERIC_FUNCTIONS_H
