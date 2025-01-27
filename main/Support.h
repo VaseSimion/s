@@ -44,7 +44,6 @@
 enum running_state {SETTING_UP, READING, RESET, INITIALIZE};
 
 typedef struct sensors_data {
-    running_state operation;
     uint8_t soil_humidity_percentage;
     uint8_t air_humidity_percentage;
     int16_t internal_temperature_x10;

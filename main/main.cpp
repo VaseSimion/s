@@ -33,8 +33,8 @@ bool calibration_battery_executed = false;
 bool calibration_humidity_executed = false;
 bool calibration_temperature_executed = false;
 
-uint16_t millivolts_water = 220;  //2200  1800
-uint16_t millivolts_air = 1000;  //3250  3150
+uint16_t millivolts_water = 1120;  //2200  1800
+uint16_t millivolts_air = 2600;  //3250  3150
 
 i2c_master_bus_handle_t i2c_bus = NULL;
 i2c_master_dev_handle_t i2c_dev = NULL;
@@ -62,13 +62,13 @@ extern "C" void app_main(void)
     calibration_battery_executed = adc_calibration_init(ADC_UNIT_1, BATTERY_ADC_CH, BATT_ADC_ATTEN, &battery_cali_handle); 
     calibration_humidity_executed = adc_calibration_init(ADC_UNIT_1, HUMIDIDY_ADC_CH, HUMIDIDY_ADC_ATTEN, &humidity_cali_handle); 
 
-/*    if (i2c_master_init(&i2c_bus) != ESP_OK) {
+    if (i2c_master_init(&i2c_bus) != ESP_OK) {
         ESP_LOGE(TAG, "I2C bus initialization failed");
     }
     if (i2c_add_HTU21D_sensor(i2c_bus, &i2c_dev) != ESP_OK) {
         ESP_LOGE(TAG, "I2C slave initialization failed");
     }
-*/
+
 
     // Read the operation mode from the file
     std::vector<uint8_t> read_operation = read_from_file_as_uint8_vector("/storage/opMode.bin");
@@ -150,18 +150,7 @@ extern "C" void app_main(void)
     }
 
     init_temp_sens(&temp_handle);
-    temperature = get_temperature(&temp_handle);
-    myData.internal_temperature_x10 = (int16_t)(temperature * 10);
-    ESP_LOGI(TAG, "Internal temperature: %.02f", temperature);
 
-
-/*
-    soft_reset_HTU21D(i2c_dev);
-    myData.ambient_temperature_x10 = (int16_t)(get_temperature_from_HTU21D(i2c_dev) * 10);
-    myData.soil_humidity_percentage = (uint8_t)get_humidity_from_HTU21D(i2c_dev);
-    ESP_LOGI(TAG, "Humidity: %d %%", myData.soil_humidity_percentage);
-    ESP_LOGI(TAG, "Temperature: %d°C", myData.ambient_temperature_x10);
-*/
     //Moved this here to save some energy
     wifi_init();
 
@@ -175,14 +164,33 @@ extern "C" void app_main(void)
                     wifi_init_ap();
                     start_http_server();
                 }
+/*
+                adc_raw_sum = 0;
+                for(int i=0;i<ADC_SAMPLE_COUNT;i++){
+                    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, HUMIDIDY_ADC_CH, &adc_raw[0][0]));
+                    //ESP_LOGI(TAG_ADC, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, HUMIDIDY_ADC_CH, adc_raw[0][0]);
+                    adc_raw_sum += adc_raw[0][0];
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                }
+                if (calibration_humidity_executed) {
+                    ESP_ERROR_CHECK(adc_cali_raw_to_voltage(humidity_cali_handle, (adc_raw_sum/ADC_SAMPLE_COUNT), &voltage[0][0]));
+                    ESP_LOGI(TAG_ADC, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, HUMIDIDY_ADC_CH, voltage[0][0]);
+                    humidity_millivolts = voltage[0][0];
+                    myData.soil_humidity_percentage = scale_adc_millivolts_to_humidity_percentage(voltage[0][0], millivolts_water, millivolts_air); 
+                    ESP_LOGI(TAG_ADC, "Scaled value is %d", myData.soil_humidity_percentage);
+                }  
+*/
+
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
             
             case READING:
                 if(old_local_operation != local_operation){
-                    old_local_operation = local_operation;
                     ESP_LOGI(TAG, "Changed operation mode to Reading");
-                    wifi_auth_init();
+                    if(old_local_operation != RESET){
+                        wifi_auth_init();
+                    }
+                    old_local_operation = local_operation;
                 }
                 if (gpio_get_level(RESET_PIN) == 0){
                     local_operation = RESET;
@@ -217,6 +225,16 @@ extern "C" void app_main(void)
                     myData.battery_level = scale_adc_millivolts_to_battery_voltage(voltage[0][0]);
                     ESP_LOGI(TAG_ADC, "Battery voltage is %d millivolts", myData.battery_level);
                 }
+                
+                soft_reset_HTU21D(i2c_dev);
+                myData.ambient_temperature_x10 = (int16_t)(get_temperature_from_HTU21D(i2c_dev) * 10);
+                myData.air_humidity_percentage = (uint8_t)get_humidity_from_HTU21D(i2c_dev);
+                ESP_LOGI(TAG_I2C, "Humidity: %d %%", myData.air_humidity_percentage);
+                ESP_LOGI(TAG_I2C, "Temperature: %d°C", myData.ambient_temperature_x10/10);
+
+                temperature = get_temperature(&temp_handle);
+                myData.internal_temperature_x10 = (int16_t)(temperature * 10);
+                ESP_LOGI(TAG, "Internal temperature: %.02f", temperature);
                 
                 if(get_connection_status())
                 {
@@ -257,6 +275,7 @@ extern "C" void app_main(void)
                         write_uint8_array_to_file("/storage/ssid.bin", (uint8_t*)"          ", SSID_SIZE);
                         write_uint8_array_to_file("/storage/password.bin", (uint8_t*)"          ", PASSWORD_SIZE);
                         write_uint8_array_to_file("/storage/apiKey.bin", (uint8_t*)"          ", API_KEY_SIZE);
+                        esp_restart(); // Reboot the ESP when switching to SETTING_UP
                     }
                 }
                 else{

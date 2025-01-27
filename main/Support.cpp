@@ -268,6 +268,7 @@ static esp_err_t http_post_handler(httpd_req_t *req) {
     current_operation = READING;
     write_uint8_array_to_file("/storage/opMode.bin", (uint8_t*)&current_operation, 1);
     vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart(); // Reboot the ESP when switching to READING
     return ESP_OK;
 }
 
@@ -605,15 +606,21 @@ void soft_reset_HTU21D(i2c_master_dev_handle_t i2c_dev){
 }
 
 void send_to_thingspeak(sensors_data *data) {
-    char url[128];
+    char url[200];
     snprintf(url, sizeof(url),
         "http://api.thingspeak.com/update?"
         "api_key=%s"
         "&field1=%d"
-        "&field2=%.1f",
+        "&field2=%d"
+        "&field3=%.1f"
+        "&field4=%.1f"
+        "&field5=%d",
         local_api_key,
         data->soil_humidity_percentage,
-        data->internal_temperature_x10 / 10.0f);
+        data->air_humidity_percentage,
+        data->internal_temperature_x10 / 10.0f,
+        data->ambient_temperature_x10 / 10.0f,
+        data->battery_level);
 
     ESP_LOGI(TAG_HTTP, "Sending data to ThingSpeak: %s", url);
 
