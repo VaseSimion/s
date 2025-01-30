@@ -33,8 +33,8 @@ bool calibration_battery_executed = false;
 bool calibration_humidity_executed = false;
 bool calibration_temperature_executed = false;
 
-uint16_t millivolts_water = 1120;  //2200  1800
-uint16_t millivolts_air = 2600;  //3250  3150
+uint16_t millivolts_water = 1120;  //110
+uint16_t millivolts_air = 2600;  //1100
 
 i2c_master_bus_handle_t i2c_bus = NULL;
 i2c_master_dev_handle_t i2c_dev = NULL;
@@ -52,7 +52,6 @@ uint8_t file_api_key[API_KEY_SIZE] = {0};
 
 extern "C" void app_main(void)
 {
-    vTaskDelay(pdMS_TO_TICKS(250)); // to give the sensor enough time to start
     init_nvs();
     init_littlefs();
     init_adc(&adc_handle);
@@ -68,7 +67,6 @@ extern "C" void app_main(void)
     if (i2c_add_HTU21D_sensor(i2c_bus, &i2c_dev) != ESP_OK) {
         ESP_LOGE(TAG, "I2C slave initialization failed");
     }
-
 
     // Read the operation mode from the file
     std::vector<uint8_t> read_operation = read_from_file_as_uint8_vector("/storage/opMode.bin");
@@ -151,7 +149,6 @@ extern "C" void app_main(void)
 
     init_temp_sens(&temp_handle);
 
-    //Moved this here to save some energy
     wifi_init();
 
     while(1) {
@@ -164,23 +161,6 @@ extern "C" void app_main(void)
                     wifi_init_ap();
                     start_http_server();
                 }
-/*
-                adc_raw_sum = 0;
-                for(int i=0;i<ADC_SAMPLE_COUNT;i++){
-                    ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, HUMIDIDY_ADC_CH, &adc_raw[0][0]));
-                    //ESP_LOGI(TAG_ADC, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, HUMIDIDY_ADC_CH, adc_raw[0][0]);
-                    adc_raw_sum += adc_raw[0][0];
-                    vTaskDelay(pdMS_TO_TICKS(1));
-                }
-                if (calibration_humidity_executed) {
-                    ESP_ERROR_CHECK(adc_cali_raw_to_voltage(humidity_cali_handle, (adc_raw_sum/ADC_SAMPLE_COUNT), &voltage[0][0]));
-                    ESP_LOGI(TAG_ADC, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, HUMIDIDY_ADC_CH, voltage[0][0]);
-                    humidity_millivolts = voltage[0][0];
-                    myData.soil_humidity_percentage = scale_adc_millivolts_to_humidity_percentage(voltage[0][0], millivolts_water, millivolts_air); 
-                    ESP_LOGI(TAG_ADC, "Scaled value is %d", myData.soil_humidity_percentage);
-                }  
-*/
-
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 break;
             
@@ -197,6 +177,7 @@ extern "C" void app_main(void)
                     set_current_op_mode(local_operation);
                     break;
                 }
+                // Measure humidity
                 adc_raw_sum = 0;
                 for(int i=0;i<ADC_SAMPLE_COUNT;i++){
                     ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, HUMIDIDY_ADC_CH, &adc_raw[0][0]));
@@ -226,6 +207,7 @@ extern "C" void app_main(void)
                     ESP_LOGI(TAG_ADC, "Battery voltage is %d millivolts", myData.battery_level);
                 }
                 
+                // Measure temperature and humidity of air
                 soft_reset_HTU21D(i2c_dev);
                 myData.ambient_temperature_x10 = (int16_t)(get_temperature_from_HTU21D(i2c_dev) * 10);
                 myData.air_humidity_percentage = (uint8_t)get_humidity_from_HTU21D(i2c_dev);

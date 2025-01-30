@@ -35,9 +35,6 @@
 #define I2C_MASTER_TX_BUF_DISABLE   0        // I2C master doesn't need buffer
 #define I2C_MASTER_RX_BUF_DISABLE   0        // I2C master doesn't need buffer
 
-#define THINGSPEAK_API_KEY "SH5HQKJ0K659OG43"
-#define THINGSPEAK_URL "http://api.thingspeak.com/update"
-
 #define WIFI_CONNECTED_BIT BIT0
 
 //Enums
